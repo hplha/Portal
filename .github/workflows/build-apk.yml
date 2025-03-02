@@ -18,16 +18,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           
       - name: Setup Java 21
-        uses:  gmitch215/setup-java@6d2c5e1f82f180ae79f799f0ed6e3e5efb4e664d
+        uses: actions/setup-java@v3
         with:
-          distribution: jetbrains
-          java-version: 21
-          
+          distribution: 'temurin'
+          java-version: '21'
+
       - name: Cache Gradle Dependencies
         uses: actions/cache@v4
         with:
@@ -50,20 +51,38 @@ jobs:
       - name: Setup google-services.json
         run: |
           echo "${{ secrets.GOOGLE_SERVICES_JSON }}" | base64 -d > app/google-services.json
+        shell: bash
+
+      - name: Decode and Setup Keystore
+        run: |
+          echo "${{ secrets.SIGN_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+          ls -lah keystore.jks  # 检查 keystore 文件是否解码成功
+        shell: bash
 
       - name: Build with Gradle
         run: |
-          echo ${{ secrets.SIGN_KEYSTORE_BASE64 }} | base64 -d > keystore.jks
           chmod +x ./gradlew
           ./gradlew :app:assembleRelease --build-cache --parallel --warning-mode all --stacktrace
-          echo "APK_FILE_ALL=$(find app/build/outputs/apk/app/release -name '*.apk')" >> $GITHUB_ENV
-          echo "APK_FILE_ARM64=$(find app/build/outputs/apk/arm64/release -name '*.apk')" >> $GITHUB_ENV
-          echo "APK_FILE_X86_64=$(find app/build/outputs/apk/x64/release -name '*.apk')" >> $GITHUB_ENV
         env:
           KEYSTORE_PATH: "../keystore.jks"
           KEYSTORE_PASSWORD: ${{ secrets.SIGN_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SIGN_ALIAS }}
           KEY_PASSWORD: ${{ secrets.SIGN_KEY_PASSWORD }}
+
+      - name: Find Generated APKs
+        run: |
+          echo "Checking APK output directory..."
+          ls -R app/build/outputs/apk/  # 检查是否生成 APK
+          
+          APK_FILE_ALL=$(find app/build/outputs/apk/release -name '*.apk')
+          echo "APK_FILE_ALL=$APK_FILE_ALL" >> $GITHUB_ENV
+          
+          APK_FILE_ARM64=$(find app/build/outputs/apk/arm64/release -name '*.apk' || echo "")
+          echo "APK_FILE_ARM64=$APK_FILE_ARM64" >> $GITHUB_ENV
+          
+          APK_FILE_X86_64=$(find app/build/outputs/apk/x86_64/release -name '*.apk' || echo "")
+          echo "APK_FILE_X86_64=$APK_FILE_X86_64" >> $GITHUB_ENV
+        shell: bash
 
       - name: Set Portal Version
         run: |
@@ -72,21 +91,33 @@ jobs:
           version_name_x86_64=$(basename -s .apk "${{ env.APK_FILE_X86_64 }}")
           echo "PORTAL_VERSION_ALL=$version_name_all" >> $GITHUB_ENV
           echo "PORTAL_VERSION_ARM64=$version_name_arm64" >> $GITHUB_ENV
-          echo "PORTAL_VERSION_x86_64=$version_name_x86_64" >> $GITHUB_ENV
+          echo "PORTAL_VERSION_X86_64=$version_name_x86_64" >> $GITHUB_ENV
+        shell: bash
 
       - name: Show Artifacts SHA256
         run: |
           echo "### Build Success :rocket:" >> $GITHUB_STEP_SUMMARY
-          echo "|ABI|SHA256|" >> $GITHUB_STEP_SUMMARY
-          echo "|:--------:|:----------|" >> $GITHUB_STEP_SUMMARY
-          all=($(sha256sum "${{ env.APK_FILE_ALL }}"))
-          echo "|all|$all" >> $GITHUB_STEP_SUMMARY
-          arm64=($(sha256sum "${{ env.APK_FILE_ARM64 }}"))
-          echo "|arm64|$arm64" >> $GITHUB_STEP_SUMMARY
-          x86_64=($(sha256sum "${{ env.APK_FILE_X86_64 }}"))
-          echo "|x86_64|$x86_64" >> $GITHUB_STEP_SUMMARY
+          echo "| ABI | SHA256 |" >> $GITHUB_STEP_SUMMARY
+          echo "|:---:|:------:|" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f "${{ env.APK_FILE_ALL }}" ]; then
+            all_sha256=$(sha256sum "${{ env.APK_FILE_ALL }}" | awk '{print $1}')
+            echo "| all | $all_sha256 |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -f "${{ env.APK_FILE_ARM64 }}" ]; then
+            arm64_sha256=$(sha256sum "${{ env.APK_FILE_ARM64 }}" | awk '{print $1}')
+            echo "| arm64 | $arm64_sha256 |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -f "${{ env.APK_FILE_X86_64 }}" ]; then
+            x86_64_sha256=$(sha256sum "${{ env.APK_FILE_X86_64 }}" | awk '{print $1}')
+            echo "| x86_64 | $x86_64_sha256 |" >> $GITHUB_STEP_SUMMARY
+          fi
+        shell: bash
 
       - name: Upload ALL APK RELEASE
+        if: env.APK_FILE_ALL != ''
         uses: actions/upload-artifact@v4
         with:
           name: "${{ env.PORTAL_VERSION_ALL }}"
@@ -94,6 +125,7 @@ jobs:
           retention-days: 1
 
       - name: Upload ARM64 APK RELEASE
+        if: env.APK_FILE_ARM64 != ''
         uses: actions/upload-artifact@v4
         with:
           name: "${{ env.PORTAL_VERSION_ARM64 }}"
@@ -101,8 +133,9 @@ jobs:
           retention-days: 1
 
       - name: Upload X86_64 APK RELEASE
+        if: env.APK_FILE_X86_64 != ''
         uses: actions/upload-artifact@v4
         with:
-          name: "${{ env.PORTAL_VERSION_x86_64 }}"
+          name: "${{ env.PORTAL_VERSION_X86_64 }}"
           path: "${{ env.APK_FILE_X86_64 }}"
           retention-days: 1
